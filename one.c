@@ -10,48 +10,42 @@
 #include <netdb.h>
 #include <errno.h>
 
+
 // forward defintion of all functions...
+static int  make_socket_nonblocking(int socket);
+static int  create_and_bind(char* port);
+static void accept_connection(int sfd);
+static void read_data(int fd);
 
-static int make_socket_nonblocking(int socket);
-static int create_and_bind(char* port);
-static void process_connect_request(int sfd);
 
-static int f;
-static int epoll_fd;
-
+static int server;
+static int event_loop;
 
 int main(int argc, char* argv[])
 {
-    int  socket, hr;
-
+    int  hr;
     struct epoll_event  event;
     struct epoll_event* events;
 
-    printf("creating and binding socket....\n");
 
     // create and bind to port
-    socket = create_and_bind("8080");
-
-    // make it non-blocking
-    printf("making socket non-blocking....\n");
-    make_socket_nonblocking(socket);
-
-    // start listening
-    printf("%s\n", "start listening....");
-    hr = listen(socket, SOMAXCONN);
-
+    server = create_and_bind("8080");
+    make_socket_nonblocking(server);
+    hr = listen(server, SOMAXCONN);
     if (hr == -1)
     {
         fprintf(stderr, "listen failed...\n");
         abort();
     }
+    printf("%s\n", "listening on port 8080");
 
-    efd =  epoll_create1(0);
 
-    event.data.fd = socket;
+    event_loop =  epoll_create1(0);
+
+    event.data.fd = server;
     event.events  = EPOLLIN | EPOLLET;
 
-    hr = epoll_ctl(efd, EPOLL_CTL_ADD, socket, &event);
+    hr = epoll_ctl(event_loop, EPOLL_CTL_ADD, server, &event);
     if (hr == -1)
     {
         perror("epoll_ctl");
@@ -63,26 +57,52 @@ int main(int argc, char* argv[])
     // the event loop
     for (;;)
     {
-        n =  epoll_wait(efd, events, 64, -1);
+        n =  epoll_wait(event_loop, events, 64, -1);
         for (i = 0; i < n; i++)
         {
             // notification on the listening socket,which could mean
             // it's either and incoming connection or data
-            if (socket ==  events[i].data.fd)
+            if (server ==  events[i].data.fd)
             {
-                process_connect_request(socket);
+                accept_connection(server);
             }
             else
             {
-
+                read_data(events[i].data.fd);
             }
 
         }
     }
+
+    // naive cleanup
+    free(events);
+    close(server);
+
     return 0;
 }
+static void read_data(int fd)
+{
+    ssize_t nread;
+    char buf[512];
+    int nwrite;
 
-static void process_connect_request(int sfd)
+    for (;;)
+    {
+        nread = read(fd, buf, 512);
+        // no more data left to  read
+        if (nread == 0 || (nread == -1 && errno != EAGAIN))
+        {
+            break;
+        }
+        else
+        {
+            nwrite = write(1, buf, nread);
+        }
+    }
+    printf("closed connection on {%d}\n", fd);
+}
+
+static void accept_connection(int sfd)
 {
     int hr;
     struct sockaddr in_addr;
@@ -123,9 +143,9 @@ static void process_connect_request(int sfd)
         event.data.fd = in_sockfd;
         event.events = EPOLLIN | EPOLLET;
 
-        hr = epoll_ctl(efd,EPOLL_CTL_ADD,in_sockfd,&event);
+        hr = epoll_ctl(event_loop, EPOLL_CTL_ADD, in_sockfd, &event);
 
-        if( hr == -1)
+        if ( hr == -1)
         {
 
             perror("epoll_ctl");
